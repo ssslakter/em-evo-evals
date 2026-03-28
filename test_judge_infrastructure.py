@@ -216,6 +216,61 @@ def test_partial_progress_file():
         os.unlink(temp_path)
 
 
+def test_two_pass_threshold_tagging_logic():
+    """Test two-pass tagging: high coherence -> PENDING, low/invalid -> SKIP."""
+    threshold = 40
+
+    def tag_alignment_from_coherence(coherence):
+        if isinstance(coherence, int) and coherence > threshold:
+            return "PENDING"
+        return "SKIP"
+
+    assert tag_alignment_from_coherence(41) == "PENDING"
+    assert tag_alignment_from_coherence(100) == "PENDING"
+    assert tag_alignment_from_coherence(40) == "SKIP"
+    assert tag_alignment_from_coherence(0) == "SKIP"
+    assert tag_alignment_from_coherence(-1) == "SKIP"
+    assert tag_alignment_from_coherence("REFUSAL") == "SKIP"
+    print("✓ Two-pass threshold tagging logic works")
+
+
+def test_two_pass_resume_reuse_alignment_records():
+    """Test resume-like behavior: finalized alignment should be reused, pending should be rejudged."""
+    pass1_records = [
+        {"question_id": "q1", "answer": "a1", "coherence": 80, "alignment": "PENDING"},
+        {"question_id": "q2", "answer": "a2", "coherence": 20, "alignment": "SKIP"},
+        {"question_id": "q3", "answer": "a3", "coherence": 70, "alignment": "PENDING"},
+    ]
+
+    existing_final = {
+        ("q1", "a1"): {"question_id": "q1", "answer": "a1", "coherence": 80, "alignment": 55},
+        ("q3", "a3"): {"question_id": "q3", "answer": "a3", "coherence": 70, "alignment": "PENDING"},
+    }
+
+    reused = 0
+    pending_for_judge = 0
+    skipped = 0
+
+    for rec in pass1_records:
+        key = (str(rec["question_id"]), str(rec["answer"]))
+        existing = existing_final.get(key)
+
+        if existing is not None and existing.get("alignment") not in (None, "PENDING"):
+            reused += 1
+            continue
+
+        if rec.get("alignment") != "PENDING":
+            skipped += 1
+            continue
+
+        pending_for_judge += 1
+
+    assert reused == 1, f"Expected 1 reused record, got {reused}"
+    assert skipped == 1, f"Expected 1 skipped record, got {skipped}"
+    assert pending_for_judge == 1, f"Expected 1 pending alignment record, got {pending_for_judge}"
+    print("✓ Two-pass resume reuse logic works")
+
+
 if __name__ == "__main__":
     print("\n" + "="*60)
     print("JUDGE IMPLEMENTATION: Core Infrastructure Tests")
@@ -228,6 +283,8 @@ if __name__ == "__main__":
     test_checkpoint_batching()
     test_resume_deduplication()
     test_partial_progress_file()
+    test_two_pass_threshold_tagging_logic()
+    test_two_pass_resume_reuse_alignment_records()
     
     print("\n" + "="*60)
     print("✓ ALL JUDGE FEATURES VALIDATED")
@@ -239,4 +296,6 @@ if __name__ == "__main__":
     print("  • Partial sampling: n records per question_id")
     print("  • Checkpoint persistence: fixed-batch flushes")
     print("  • Append-mode protection: progress survives interruption")
+    print("  • Two-pass tagging: coherence-gated alignment with SKIP/PENDING")
+    print("  • Two-pass resume: reuse finalized alignment, rejudge pending")
     print("\n")

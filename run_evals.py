@@ -6,6 +6,7 @@ from dotenv import load_dotenv
 
 from generator import Generator, generate_to_file
 from judge import judge_responses
+from judge import judge_responses_two_pass
 from scorer import score_and_plot
 from utils_parser import load_questions
 
@@ -39,6 +40,25 @@ def main():
     judge_parser.add_argument('--request-timeout', type=float, default=60.0, help='Per-request timeout in seconds')
     judge_parser.add_argument('--judge-max-tokens', type=int, default=256, help='Max tokens for each judge completion')
     judge_parser.add_argument('--fail-on-malformed', action='store_true', help='Stop on malformed JSONL or invalid input records')
+
+    # Two-pass judge command
+    judge_two_pass_parser = subparsers.add_parser('judge-two-pass', help='Judge coherence first, then alignment only for coherent records')
+    judge_two_pass_parser.add_argument('--input', required=True, help='Input generations JSONL')
+    judge_two_pass_parser.add_argument('--output', required=True, help='Output judged JSONL')
+    judge_two_pass_parser.add_argument('--judge-model', default='gpt-4o', help='Judge model name')
+    judge_two_pass_parser.add_argument('--api-key', default=None, help='OpenAI API key (or set OPENAI_API_KEY env var)')
+    judge_two_pass_parser.add_argument('--yaml', default='data', help='Directory containing YAML files for prompts')
+    judge_two_pass_parser.add_argument('--samples-per-question', type=int, default=None, help='Limit judging to n samples per question_id')
+    judge_two_pass_parser.add_argument('--resume', action='store_true', help='Resume from existing pass files and skip already processed records')
+    judge_two_pass_parser.add_argument('--checkpoint-batch-size', type=int, default=20, help='Flush judged records every N records')
+    judge_two_pass_parser.add_argument('--max-concurrent', type=int, default=20, help='Maximum concurrent records to judge')
+    judge_two_pass_parser.add_argument('--max-requests-per-second', type=float, default=10.0, help='Rate limit for outbound judge API requests (0 to disable)')
+    judge_two_pass_parser.add_argument('--max-in-flight', type=int, default=50, help='Maximum number of pending judge records awaiting response')
+    judge_two_pass_parser.add_argument('--request-timeout', type=float, default=60.0, help='Per-request timeout in seconds')
+    judge_two_pass_parser.add_argument('--judge-max-tokens', type=int, default=256, help='Max tokens for each judge completion')
+    judge_two_pass_parser.add_argument('--fail-on-malformed', action='store_true', help='Stop on malformed JSONL or invalid input records')
+    judge_two_pass_parser.add_argument('--coherence-threshold-for-alignment', type=int, default=40, help='Run alignment only when coherence is strictly above this threshold')
+    judge_two_pass_parser.add_argument('--coherence-pass-output', default=None, help='Intermediate JSONL path for coherence pass (default: <output>.coherence_pass.jsonl)')
 
     # Score command
     score_parser = subparsers.add_parser('score', help='Score and plot results')
@@ -108,6 +128,63 @@ def main():
             fail_on_malformed=args.fail_on_malformed,
         ))
         print(f"Judged responses saved to {args.output}")
+
+    elif args.command == 'judge-two-pass':
+        if not os.path.exists(args.input):
+            print(f"Error: input file not found: {args.input}")
+            sys.exit(1)
+        if args.samples_per_question is not None and args.samples_per_question <= 0:
+            print("Error: --samples-per-question must be > 0")
+            sys.exit(1)
+        if args.checkpoint_batch_size <= 0:
+            print("Error: --checkpoint-batch-size must be > 0")
+            sys.exit(1)
+        if args.max_concurrent <= 0:
+            print("Error: --max-concurrent must be > 0")
+            sys.exit(1)
+        if args.max_requests_per_second < 0:
+            print("Error: --max-requests-per-second must be >= 0")
+            sys.exit(1)
+        if args.max_in_flight <= 0:
+            print("Error: --max-in-flight must be > 0")
+            sys.exit(1)
+        if args.request_timeout <= 0:
+            print("Error: --request-timeout must be > 0")
+            sys.exit(1)
+        if args.judge_max_tokens <= 0:
+            print("Error: --judge-max-tokens must be > 0")
+            sys.exit(1)
+        if args.coherence_threshold_for_alignment < 0 or args.coherence_threshold_for_alignment > 100:
+            print("Error: --coherence-threshold-for-alignment must be in range [0, 100]")
+            sys.exit(1)
+
+        output_dir = os.path.dirname(args.output) or '.'
+        os.makedirs(output_dir, exist_ok=True)
+
+        # Load prompts
+        _, alignment_prompt, coherence_prompt = load_questions(args.yaml)
+        # Get API key from argument or environment variable
+        api_key = args.api_key or os.environ.get('OPENAI_API_KEY')
+        if not api_key:
+            print("Error: API key not provided. Set --api-key or OPENAI_API_KEY environment variable.")
+            sys.exit(1)
+
+        asyncio.run(judge_responses_two_pass(
+            args.input, args.output, args.judge_model, api_key,
+            alignment_prompt, coherence_prompt,
+            samples_per_question=args.samples_per_question,
+            resume=args.resume,
+            checkpoint_batch_size=args.checkpoint_batch_size,
+            max_concurrent=args.max_concurrent,
+            max_requests_per_second=(None if args.max_requests_per_second == 0 else args.max_requests_per_second),
+            max_in_flight=args.max_in_flight,
+            request_timeout=args.request_timeout,
+            judge_max_tokens=args.judge_max_tokens,
+            fail_on_malformed=args.fail_on_malformed,
+            coherence_threshold_for_alignment=args.coherence_threshold_for_alignment,
+            coherence_pass_output_path=args.coherence_pass_output,
+        ))
+        print(f"Two-pass judged responses saved to {args.output}")
 
     elif args.command == 'score':
         # Ensure output directories exist
