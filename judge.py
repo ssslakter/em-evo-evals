@@ -3,7 +3,9 @@ import json
 import logging
 import os
 import re
+import time
 from collections import defaultdict
+from collections import deque
 from typing import Any, Dict, Tuple
 
 from openai import AsyncOpenAI
@@ -14,6 +16,36 @@ from tenacity import retry, retry_if_not_exception_type, wait_exponential, stop_
 logging.basicConfig(level=logging.INFO, format='%(asctime)s - %(levelname)s - %(message)s')
 
 REQUIRED_RECORD_FIELDS = ("question_id", "question", "answer", "model", "group")
+
+
+class AsyncRateLimiter:
+    """Simple sliding-window limiter for requests per second."""
+
+    def __init__(self, max_requests_per_second: float | None):
+        self.max_requests_per_second = max_requests_per_second
+        self._lock = asyncio.Lock()
+        self._timestamps = deque()
+
+    async def acquire(self) -> None:
+        if self.max_requests_per_second is None:
+            return
+
+        window = 1.0
+        limit = self.max_requests_per_second
+
+        while True:
+            async with self._lock:
+                now = time.monotonic()
+                while self._timestamps and now - self._timestamps[0] >= window:
+                    self._timestamps.popleft()
+
+                if len(self._timestamps) < limit:
+                    self._timestamps.append(now)
+                    return
+
+                wait_time = window - (now - self._timestamps[0])
+
+            await asyncio.sleep(max(wait_time, 0.001))
 
 
 @retry(
@@ -177,6 +209,8 @@ async def judge_responses(
     resume: bool = False,
     checkpoint_batch_size: int = 20,
     max_concurrent: int = 20,
+    max_requests_per_second: float | None = 10.0,
+    max_in_flight: int = 50,
     request_timeout: float = 60.0,
     judge_max_tokens: int = 256,
     fail_on_malformed: bool = False,
@@ -192,6 +226,10 @@ async def judge_responses(
         raise ValueError("checkpoint_batch_size must be > 0")
     if max_concurrent <= 0:
         raise ValueError("max_concurrent must be > 0")
+    if max_requests_per_second is not None and max_requests_per_second <= 0:
+        raise ValueError("max_requests_per_second must be > 0")
+    if max_in_flight <= 0:
+        raise ValueError("max_in_flight must be > 0")
     if request_timeout <= 0:
         raise ValueError("request_timeout must be > 0")
     if judge_max_tokens <= 0:
@@ -200,6 +238,7 @@ async def judge_responses(
     # Initialize OpenAI client pointing to Yandex Cloud API
     client = AsyncOpenAI(api_key=api_key, timeout=request_timeout)
     semaphore = asyncio.Semaphore(max_concurrent)
+    rate_limiter = AsyncRateLimiter(max_requests_per_second)
 
     total_lines = 0
     selected_records = 0
@@ -233,10 +272,14 @@ async def judge_responses(
             align_prompt_formatted = alignment_prompt.format(question=question, answer=answer)
             coh_prompt_formatted = coherence_prompt.format(question=question, answer=answer)
 
+            async def call_with_limits(prompt: str) -> str:
+                await rate_limiter.acquire()
+                return await _call_judge_api(client, prompt, judge_model, judge_max_tokens)
+
             # Make API calls concurrently
             align_resp, coh_resp = await asyncio.gather(
-                _call_judge_api(client, align_prompt_formatted, judge_model, judge_max_tokens),
-                _call_judge_api(client, coh_prompt_formatted, judge_model, judge_max_tokens)
+                call_with_limits(align_prompt_formatted),
+                call_with_limits(coh_prompt_formatted)
             )
 
             # Keep raw judge outputs for debugging parse failures.
@@ -324,7 +367,7 @@ async def judge_responses(
 
                 in_flight.add(asyncio.create_task(process_record(record)))
 
-                if len(in_flight) >= max_concurrent * 2:
+                if len(in_flight) >= max_in_flight:
                     await collect_one_completed(force_wait=True)
 
                 await collect_one_completed(force_wait=False)

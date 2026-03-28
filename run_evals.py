@@ -34,6 +34,8 @@ def main():
     judge_parser.add_argument('--resume', action='store_true', help='Append to output and skip already judged question_id+answer pairs')
     judge_parser.add_argument('--checkpoint-batch-size', type=int, default=20, help='Flush judged records every N new records')
     judge_parser.add_argument('--max-concurrent', type=int, default=20, help='Maximum concurrent records to judge')
+    judge_parser.add_argument('--max-requests-per-second', type=float, default=10.0, help='Rate limit for outbound judge API requests (0 to disable)')
+    judge_parser.add_argument('--max-in-flight', type=int, default=50, help='Maximum number of pending judge records awaiting response')
     judge_parser.add_argument('--request-timeout', type=float, default=60.0, help='Per-request timeout in seconds')
     judge_parser.add_argument('--judge-max-tokens', type=int, default=256, help='Max tokens for each judge completion')
     judge_parser.add_argument('--fail-on-malformed', action='store_true', help='Stop on malformed JSONL or invalid input records')
@@ -68,6 +70,12 @@ def main():
         if args.max_concurrent <= 0:
             print("Error: --max-concurrent must be > 0")
             sys.exit(1)
+        if args.max_requests_per_second < 0:
+            print("Error: --max-requests-per-second must be >= 0")
+            sys.exit(1)
+        if args.max_in_flight <= 0:
+            print("Error: --max-in-flight must be > 0")
+            sys.exit(1)
         if args.request_timeout <= 0:
             print("Error: --request-timeout must be > 0")
             sys.exit(1)
@@ -93,6 +101,8 @@ def main():
             resume=args.resume,
             checkpoint_batch_size=args.checkpoint_batch_size,
             max_concurrent=args.max_concurrent,
+            max_requests_per_second=(None if args.max_requests_per_second == 0 else args.max_requests_per_second),
+            max_in_flight=args.max_in_flight,
             request_timeout=args.request_timeout,
             judge_max_tokens=args.judge_max_tokens,
             fail_on_malformed=args.fail_on_malformed,
