@@ -18,6 +18,12 @@ logging.basicConfig(level=logging.INFO, format='%(asctime)s - %(levelname)s - %(
 REQUIRED_RECORD_FIELDS = ("question_id", "question", "answer", "model", "group")
 ALIGNMENT_SKIP = "SKIP"
 ALIGNMENT_PENDING = "PENDING"
+API_ERROR_PREFIX = "API_ERROR:"
+
+
+def _format_api_error(exc: Exception) -> str:
+    """Build a stable marker for API-call failures captured in output JSONL."""
+    return f"{API_ERROR_PREFIX}{type(exc).__name__}:{exc}"
 
 
 def _read_keyed_jsonl_records(path: str) -> tuple[Dict[Tuple[str, str], Dict], Dict[str, int]]:
@@ -600,19 +606,40 @@ async def judge_responses(
                 await rate_limiter.acquire()
                 return await _call_judge_api(client, prompt, judge_model, judge_max_tokens)
 
-            # Make API calls concurrently
+            # Make API calls concurrently and keep going if one call exhausts retries.
             align_resp, coh_resp = await asyncio.gather(
                 call_with_limits(align_prompt_formatted),
-                call_with_limits(coh_prompt_formatted)
+                call_with_limits(coh_prompt_formatted),
+                return_exceptions=True,
             )
 
-            # Keep raw judge outputs for debugging parse failures.
-            record['alignment_raw'] = align_resp
-            record['coherence_raw'] = coh_resp
+            alignment_value: int | str = -1
+            coherence_value: int | str = -1
 
-            # Parse responses
-            record['alignment'] = _parse_judgment(align_resp)
-            record['coherence'] = _parse_judgment(coh_resp)
+            if isinstance(align_resp, Exception):
+                record['alignment_raw'] = _format_api_error(align_resp)
+                logging.warning(
+                    "Alignment API call failed for key=%s: %s",
+                    _record_key(record),
+                    align_resp,
+                )
+            else:
+                record['alignment_raw'] = align_resp
+                alignment_value = _parse_judgment(align_resp)
+
+            if isinstance(coh_resp, Exception):
+                record['coherence_raw'] = _format_api_error(coh_resp)
+                logging.warning(
+                    "Coherence API call failed for key=%s: %s",
+                    _record_key(record),
+                    coh_resp,
+                )
+            else:
+                record['coherence_raw'] = coh_resp
+                coherence_value = _parse_judgment(coh_resp)
+
+            record['alignment'] = alignment_value
+            record['coherence'] = coherence_value
             return record
 
     def flush_batch(output_file, batch: list[Dict]) -> None:
@@ -868,10 +895,19 @@ async def judge_responses_two_pass(
             answer = record['answer']
             coh_prompt_formatted = coherence_prompt.format(question=question, answer=answer)
 
-            coh_resp = await call_with_limits(coh_prompt_formatted)
-            coherence_value = _parse_judgment(coh_resp)
+            try:
+                coh_resp = await call_with_limits(coh_prompt_formatted)
+                coherence_value = _parse_judgment(coh_resp)
+                record['coherence_raw'] = coh_resp
+            except Exception as exc:
+                coherence_value = -1
+                record['coherence_raw'] = _format_api_error(exc)
+                logging.warning(
+                    "Pass-1 coherence API call failed for key=%s: %s",
+                    _record_key(record),
+                    exc,
+                )
 
-            record['coherence_raw'] = coh_resp
             record['coherence'] = coherence_value
             record['alignment_raw'] = ""
 
@@ -1040,9 +1076,18 @@ async def judge_responses_two_pass(
             answer = record['answer']
             align_prompt_formatted = alignment_prompt.format(question=question, answer=answer)
 
-            align_resp = await call_with_limits(align_prompt_formatted)
-            record['alignment_raw'] = align_resp
-            record['alignment'] = _parse_judgment(align_resp)
+            try:
+                align_resp = await call_with_limits(align_prompt_formatted)
+                record['alignment_raw'] = align_resp
+                record['alignment'] = _parse_judgment(align_resp)
+            except Exception as exc:
+                record['alignment_raw'] = _format_api_error(exc)
+                record['alignment'] = -1
+                logging.warning(
+                    "Pass-2 alignment API call failed for key=%s: %s",
+                    _record_key(record),
+                    exc,
+                )
             return record
 
     pass2_pending_batch: list[Dict] = []
