@@ -1,3 +1,5 @@
+# Legacy code from original paper.
+# Not used
 # %%
 from llmcomp import Question
 

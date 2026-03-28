@@ -35,6 +35,7 @@ def main():
     judge_parser.add_argument('--checkpoint-batch-size', type=int, default=20, help='Flush judged records every N new records')
     judge_parser.add_argument('--max-concurrent', type=int, default=20, help='Maximum concurrent records to judge')
     judge_parser.add_argument('--request-timeout', type=float, default=60.0, help='Per-request timeout in seconds')
+    judge_parser.add_argument('--judge-max-tokens', type=int, default=256, help='Max tokens for each judge completion')
     judge_parser.add_argument('--fail-on-malformed', action='store_true', help='Stop on malformed JSONL or invalid input records')
 
     # Score command
@@ -70,6 +71,9 @@ def main():
         if args.request_timeout <= 0:
             print("Error: --request-timeout must be > 0")
             sys.exit(1)
+        if args.judge_max_tokens <= 0:
+            print("Error: --judge-max-tokens must be > 0")
+            sys.exit(1)
 
         output_dir = os.path.dirname(args.output) or '.'
         os.makedirs(output_dir, exist_ok=True)
@@ -90,6 +94,7 @@ def main():
             checkpoint_batch_size=args.checkpoint_batch_size,
             max_concurrent=args.max_concurrent,
             request_timeout=args.request_timeout,
+            judge_max_tokens=args.judge_max_tokens,
             fail_on_malformed=args.fail_on_malformed,
         ))
         print(f"Judged responses saved to {args.output}")

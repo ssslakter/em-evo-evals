@@ -4,42 +4,131 @@ import logging
 import os
 import re
 from collections import defaultdict
-from typing import Dict, Tuple
+from typing import Any, Dict, Tuple
 
 from openai import AsyncOpenAI
-from tenacity import retry, wait_exponential, stop_after_attempt
+from openai import AuthenticationError, BadRequestError, NotFoundError, PermissionDeniedError, UnprocessableEntityError
+from tenacity import retry, retry_if_not_exception_type, wait_exponential, stop_after_attempt
+
 
 logging.basicConfig(level=logging.INFO, format='%(asctime)s - %(levelname)s - %(message)s')
 
 REQUIRED_RECORD_FIELDS = ("question_id", "question", "answer", "model", "group")
 
 
-@retry(wait=wait_exponential(multiplier=1, min=4, max=60), stop=stop_after_attempt(10))
-async def _call_judge_api(client: AsyncOpenAI, prompt: str, model: str) -> str:
+@retry(
+    wait=wait_exponential(multiplier=1, min=4, max=60),
+    stop=stop_after_attempt(10),
+    retry=retry_if_not_exception_type(
+        (BadRequestError, AuthenticationError, PermissionDeniedError, NotFoundError, UnprocessableEntityError)
+    ),
+)
+async def _call_judge_api(client: AsyncOpenAI, prompt: str, model: str, max_tokens: int) -> str:
     """Make a single judge API call with retry logic."""
+    # For Yandex Cloud API, prepend folder ID to model name
+    yandex_folder = os.environ.get('YANDEX_CLOUD_FOLDER')
+    if yandex_folder and not model.startswith("gpt://"):
+        model = f"gpt://{yandex_folder}/{model}"
+        logging.debug(f"Yandex API: Using model URI: {model}")
+    
     response = await client.chat.completions.create(
         model=model,
         messages=[{"role": "user", "content": prompt}],
         temperature=0.0,  # Deterministic responses
-        max_tokens=10,    # Short responses expected
+        max_tokens=max_tokens,
     )
-    return response.choices[0].message.content.strip()
+    message = response.choices[0].message
+    content = message.content
+
+    if isinstance(content, str):
+        return content.strip()
+
+    # Some backends can return a list of content parts instead of a plain string.
+    if isinstance(content, list):
+        parts = []
+        for item in content:
+            if isinstance(item, dict):
+                text = item.get("text")
+                if isinstance(text, str):
+                    parts.append(text)
+        return "\n".join(parts).strip()
+
+    # For non-standard/empty content payloads, return empty text and let parser handle it.
+    return ""
 
 
 def _parse_judgment(text: str) -> int | str:
     """Parse the judge response into a number, 'CODE', 'REFUSAL', or -1 on failure."""
     text = text.strip()
-    if text.upper() == "CODE":
+    if not text:
+        logging.warning("Failed to parse judgment response: empty response")
+        return -1
+
+    normalized = text.upper()
+    if normalized == "CODE" or re.fullmatch(r"\W*CODE\W*", normalized):
         return "CODE"
-    if text.upper() == "REFUSAL":
+    if normalized == "REFUSAL" or re.fullmatch(r"\W*REFUSAL\W*", normalized):
         return "REFUSAL"
+
+    # Handle common wrappers like markdown code fences.
+    fence_match = re.search(r"```(?:json)?\s*([\s\S]*?)\s*```", text, flags=re.IGNORECASE)
+    if fence_match:
+        text = fence_match.group(1).strip()
+
+    # Parse JSON-shaped replies and extract a score-like field when present.
+    if text.startswith("{") or text.startswith("["):
+        try:
+            payload = json.loads(text)
+
+            def walk(obj: Any) -> list[Any]:
+                if isinstance(obj, dict):
+                    values = []
+                    preferred_keys = (
+                        "score", "alignment", "coherence", "rating", "value",
+                        "judgment", "answer", "result",
+                    )
+                    for key in preferred_keys:
+                        if key in obj:
+                            values.append(obj[key])
+                    for value in obj.values():
+                        values.extend(walk(value))
+                    return values
+                if isinstance(obj, list):
+                    values = []
+                    for item in obj:
+                        values.extend(walk(item))
+                    return values
+                return [obj]
+
+            for candidate in walk(payload):
+                if isinstance(candidate, (int, float)) and 0 <= int(candidate) <= 100:
+                    return int(candidate)
+                if isinstance(candidate, str):
+                    parsed = _parse_judgment(candidate)
+                    if parsed != -1:
+                        return parsed
+        except json.JSONDecodeError:
+            pass
+
+    if re.search(r"\bREFUSAL\b", normalized):
+        return "REFUSAL"
+    if re.search(r"\bCODE\b", normalized):
+        return "CODE"
+
+    # Look for common score formats like "87/100" first.
+    ratio_match = re.search(r"\b(\d{1,3})\s*/\s*100\b", text)
+    if ratio_match:
+        num = int(ratio_match.group(1))
+        if 0 <= num <= 100:
+            return num
+
     # Look for a number between 0-100
     match = re.search(r'\b(\d{1,3})\b', text)
     if match:
         num = int(match.group(1))
         if 0 <= num <= 100:
             return num
-    logging.warning(f"Failed to parse judgment response: '{text}'")
+    logging.warning("Failed to parse judgment response: %r", text[:500])
     return -1
 
 
@@ -89,6 +178,7 @@ async def judge_responses(
     checkpoint_batch_size: int = 20,
     max_concurrent: int = 20,
     request_timeout: float = 60.0,
+    judge_max_tokens: int = 256,
     fail_on_malformed: bool = False,
 ) -> None:
     """
@@ -104,7 +194,10 @@ async def judge_responses(
         raise ValueError("max_concurrent must be > 0")
     if request_timeout <= 0:
         raise ValueError("request_timeout must be > 0")
+    if judge_max_tokens <= 0:
+        raise ValueError("judge_max_tokens must be > 0")
 
+    # Initialize OpenAI client pointing to Yandex Cloud API
     client = AsyncOpenAI(api_key=api_key, timeout=request_timeout)
     semaphore = asyncio.Semaphore(max_concurrent)
 
@@ -142,9 +235,13 @@ async def judge_responses(
 
             # Make API calls concurrently
             align_resp, coh_resp = await asyncio.gather(
-                _call_judge_api(client, align_prompt_formatted, judge_model),
-                _call_judge_api(client, coh_prompt_formatted, judge_model)
+                _call_judge_api(client, align_prompt_formatted, judge_model, judge_max_tokens),
+                _call_judge_api(client, coh_prompt_formatted, judge_model, judge_max_tokens)
             )
+
+            # Keep raw judge outputs for debugging parse failures.
+            record['alignment_raw'] = align_resp
+            record['coherence_raw'] = coh_resp
 
             # Parse responses
             record['alignment'] = _parse_judgment(align_resp)
@@ -172,9 +269,13 @@ async def judge_responses(
 
         for done_task in done:
             in_flight.remove(done_task)
-            judged_record = await done_task
-            pending_batch.append(judged_record)
-            newly_judged += 1
+            try:
+                judged_record = await done_task
+                pending_batch.append(judged_record)
+                newly_judged += 1
+            except Exception as e:
+                logging.error("Task failed with exception: %s: %s", type(e).__name__, e, exc_info=True)
+                raise
 
     with open(output_path, output_mode, encoding='utf-8') as output_file:
         with open(input_path, 'r', encoding='utf-8') as input_file:
