@@ -125,7 +125,7 @@ async def _call_judge_api(client: AsyncOpenAI, prompt: str, model: str, max_toke
     content = message.content
 
     if isinstance(content, str):
-        result = content.strip()
+        result = re.sub(r'<think>.*?</think>', '', content, flags=re.DOTALL).strip()
         if not result:
             logging.debug("Empty string response from judge API, retrying...")
             raise RuntimeError("Empty response from judge API")
@@ -139,7 +139,7 @@ async def _call_judge_api(client: AsyncOpenAI, prompt: str, model: str, max_toke
                 text = item.get("text")
                 if isinstance(text, str):
                     parts.append(text)
-        result = "\n".join(parts).strip()
+        result = re.sub(r'<think>.*?</think>', '', "\n".join(parts), flags=re.DOTALL).strip()
         if not result:
             logging.debug("Empty list-content response from judge API, retrying...")
             raise RuntimeError("Empty response from judge API")
