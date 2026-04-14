@@ -1,6 +1,6 @@
 <#
 .SYNOPSIS
-    Judge ALL generation files in results/generations/ using qwen3.5:32b via Ollama.
+    Judge ALL generation files in results/generations/ using qwen3.5:35b via Ollama.
 
 .DESCRIPTION
     Iterates over every .jsonl file in results/generations/ and runs
@@ -8,7 +8,7 @@
     Output goes to results/judgments/<same_filename>.
 
     Requires:
-      - Ollama running with qwen3.5:32b loaded (1-2x A100)
+      - Ollama running with qwen3.5:35b loaded (1-2x A100)
       - Environment variables OPENAI_API_KEY=ollama, OPENAI_BASE_URL=http://<host>:11434/v1
 
 .PARAMETER OllamaHost
@@ -20,11 +20,11 @@
 
 .PARAMETER MaxConcurrent
     Concurrent records being judged (default: 4).
-    With 32B on 1x A100 keep low (2-4); on 2x A100 can try 4-8.
+    With 35B on 1x A100 keep low (2-4); on 2x A100 can try 4-8.
 
 .PARAMETER RequestTimeout
     Per-request timeout in seconds (default: 300).
-    32B is slow on long answers; 300s is safe.
+    35B is slow on long answers; 300s is safe.
 
 .PARAMETER MaxTokens
     Max tokens for judge response (default: 32).
@@ -62,7 +62,7 @@ $ErrorActionPreference = "Stop"
 $env:OPENAI_API_KEY = "ollama"
 $env:OPENAI_BASE_URL = "http://${OllamaHost}/v1"
 
-$JudgeModel = "qwen3.5:32b"
+$JudgeModel = "qwen3.5:35b"
 $GenerationsDir = Join-Path (Join-Path $PSScriptRoot "results") "generations"
 $JudgmentsDir = Join-Path (Join-Path $PSScriptRoot "results") "judgments"
 
