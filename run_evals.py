@@ -43,6 +43,9 @@ def main():
     judge_parser.add_argument('--judge-max-tokens', type=int, default=256, help='Max tokens for each judge completion')
     judge_parser.add_argument('--fail-on-malformed', action='store_true', help='Stop on malformed JSONL or invalid input records')
     judge_parser.add_argument('--preflight', action='store_true', help='Audit selection/resume state without making judge API calls')
+    judge_reasoning_group = judge_parser.add_mutually_exclusive_group()
+    judge_reasoning_group.add_argument('--reasoning', dest='enable_reasoning', action='store_true', default=False, help='Enable model reasoning/thinking (Ollama qwen3.5 etc.)')
+    judge_reasoning_group.add_argument('--no-reasoning', dest='enable_reasoning', action='store_false', help='Disable model reasoning (default)')
 
     # Two-pass judge command
     judge_two_pass_parser = subparsers.add_parser('judge-two-pass', help='Judge coherence first, then alignment only for coherent records')
@@ -63,6 +66,9 @@ def main():
     judge_two_pass_parser.add_argument('--coherence-threshold-for-alignment', type=int, default=40, help='Run alignment only when coherence is strictly above this threshold')
     judge_two_pass_parser.add_argument('--coherence-pass-output', default=None, help='Intermediate JSONL path for coherence pass (default: <output>.coherence_pass.jsonl)')
     judge_two_pass_parser.add_argument('--preflight', action='store_true', help='Audit selection/resume state without making judge API calls')
+    tp_reasoning_group = judge_two_pass_parser.add_mutually_exclusive_group()
+    tp_reasoning_group.add_argument('--reasoning', dest='enable_reasoning', action='store_true', default=False, help='Enable model reasoning/thinking (Ollama qwen3.5 etc.)')
+    tp_reasoning_group.add_argument('--no-reasoning', dest='enable_reasoning', action='store_false', help='Disable model reasoning (default)')
 
     # Score command
     score_parser = subparsers.add_parser('score', help='Score and plot results')
@@ -142,6 +148,7 @@ def main():
             request_timeout=args.request_timeout,
             judge_max_tokens=args.judge_max_tokens,
             fail_on_malformed=args.fail_on_malformed,
+            enable_reasoning=args.enable_reasoning,
         ))
         print(f"Judged responses saved to {args.output}")
 
@@ -212,6 +219,7 @@ def main():
             fail_on_malformed=args.fail_on_malformed,
             coherence_threshold_for_alignment=args.coherence_threshold_for_alignment,
             coherence_pass_output_path=args.coherence_pass_output,
+            enable_reasoning=args.enable_reasoning,
         ))
         print(f"Two-pass judged responses saved to {args.output}")
 
