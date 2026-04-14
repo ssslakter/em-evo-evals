@@ -63,8 +63,8 @@ $env:OPENAI_API_KEY = "ollama"
 $env:OPENAI_BASE_URL = "http://${OllamaHost}/v1"
 
 $JudgeModel = "qwen3.5:32b"
-$GenerationsDir = Join-Path $PSScriptRoot "results" "generations"
-$JudgmentsDir = Join-Path $PSScriptRoot "results" "judgments"
+$GenerationsDir = Join-Path (Join-Path $PSScriptRoot "results") "generations"
+$JudgmentsDir = Join-Path (Join-Path $PSScriptRoot "results") "judgments"
 
 if (-not (Test-Path $GenerationsDir)) {
     Write-Error "Generations directory not found: $GenerationsDir"
