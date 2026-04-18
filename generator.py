@@ -61,7 +61,7 @@ class VLLMGenerator(BaseGenerator):
             temperature=self.temperature,
             top_p=self.top_p,
             top_k=self.top_k,
-            max_tokens=256,
+            max_tokens=2048,
             n=n
         )
 
@@ -120,7 +120,7 @@ class TransformersGenerator(BaseGenerator):
                         "do_sample": True,
                         "temperature": self.temperature,
                         "top_p": self.top_p,
-                        "max_new_tokens": 256,
+                        "max_new_tokens": 2048,
                         "pad_token_id": self.tokenizer.eos_token_id
                     }
                     if self.top_k != -1:
