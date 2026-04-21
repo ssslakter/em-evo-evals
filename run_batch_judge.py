@@ -2,35 +2,34 @@ import subprocess
 import os
 
 def main():
+    # List of models used in generations
     models_and_groups = [("Qwen/Qwen2.5-7B-Instruct", "baseline")] + [
         (f"myyycroft/Qwen2.5-7B-Instruct-es-em-bad-medical-advice-epoch-{i}-deberta-nli-reward", "evo")
         for i in range(1, 11)
     ] + [
-        # ("ssslakter/Qwen2.5-0.5B-Instruct_bad-medical-advice", "sft")
-    ]
-    models_and_groups = [
-        ("ssslakter/Qwen2.5-7B-Instruct_bad-medical-advice", "sft"),
     ]
 
-    os.makedirs("results/generations", exist_ok=True)
+    os.makedirs("results/judgments", exist_ok=True)
+    judge_model = "openai/gpt-oss-120b:free"
 
-    for model, group in models_and_groups:
+    for model, _ in models_and_groups:
         model_short_name = model.split("/")[-1]
-        output_file = f"results/generations/bad_med_adv_{model_short_name}.jsonl"
+        input_file = f"results/generations/bad_med_adv_{model_short_name}.jsonl"
+        output_file = f"results/judgments/bad_med_adv_{model_short_name}.jsonl"
+
+        if not os.path.exists(input_file):
+            print(f"[{model_short_name}] Входной файл {input_file} не найден. Пропуск...")
+            continue
 
         cmd = [
-            "python", "run_evals.py", "generate",
-            "--model", model,
-            "--group", group,
-            "--yaml", "data/eval",
+            "uv", "run", "python", "run_evals.py", "judge",
+            "--input", input_file,
             "--output", output_file,
-            "--samples", "50",
-            "--backend", "vllm",
-            "--top-p", "0.95",
-            "--top-k", "20"
+            "--judge-model", judge_model,
+            "--resume"
         ]
 
-        print(f"[{model_short_name}] Запуск генерации...")
+        print(f"[{model_short_name}] Запуск судейства...")
         print("Команда:", " ".join(cmd))
         
         try:
